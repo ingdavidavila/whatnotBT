@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Best Times to Stream</title>
+<script src="/chart.umd.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#16181d;--mut:#667085;--line:#e4e7ec;--acc:#5b5bd6;--r:12px}
+@media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1a1d24;--ink:#eef0f4;--mut:#9aa3b2;--line:#2a2f3a;--acc:#8b8bf0}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--mut);margin:0 0 16px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:16px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+input,select,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+input[type=password]{flex:1;min-width:220px}button{background:var(--acc);color:#fff;border:0;cursor:pointer}button:disabled{opacity:.5}
+label{color:var(--mut);font-size:13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:760px){.grid{grid-template-columns:1fr}}
+h2{font-size:15px;margin:0 0 10px}.msg{font-size:13px;color:var(--mut)}.err{color:#d92d20}
+.best{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.pill{border:1px solid var(--line);border-radius:10px;padding:10px}.pill b{display:block;font-size:17px}.pill span{color:var(--mut);font-size:12px}
+.heat{display:grid;grid-template-columns:44px repeat(24,1fr);gap:2px;font-size:10px;overflow-x:auto;min-width:640px}
+.heat div{text-align:center;padding:6px 0;border-radius:3px;color:var(--mut)}.heat .c{color:#111}.wrap{overflow-x:auto}
+canvas{max-height:280px}
+</style></head><body><main>
+<h1>Best times to stream</h1>
+<p class="sub">Built from your own past shows via the Whatnot Seller API. Times shown in <span id="tz"></span>.</p>
+
+<div class="card"><div class="row">
+<input id="token" type="password" placeholder="Personal access token (wn_pat_tk_...), needs read:shows and read:reports" autocomplete="off">
+<button id="sync">Sync from Whatnot</button><span id="status" class="msg"></span></div>
+<p class="msg" style="margin:8px 0 0">The token is held in server memory only. Synced shows are saved to <code>data/shows.json</code>, so the graphs work offline and each sync only fetches new shows.</p></div>
+
+<div class="card"><div class="row">
+<label>Rank by <select id="metric">
+<option value="sales">Avg sales per show ($)</option><option value="orders">Avg orders per show</option>
+<option value="peakViewers">Avg peak viewers</option><option value="buyers">Avg buyers</option>
+<option value="firstTimeBuyers">Avg first-time buyers</option><option value="sph">Sales per hour streamed ($/h)</option></select></label>
+<label>Min shows per slot <select id="min"><option>1</option><option selected>2</option><option>3</option><option>5</option></select></label>
+<label>Window <select id="win"><option value="0">All time</option><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="180">Last 180 days</option></select></label>
+<span id="count" class="msg"></span></div></div>
+
+<div class="card"><h2>Top slots</h2><div id="best" class="best"></div></div>
+<div class="card"><h2>Heatmap: day and start hour</h2><div class="wrap"><div id="heat" class="heat"></div></div><p class="msg">Darker means better for the chosen metric. Blank cells have fewer shows than your minimum.</p></div>
+<div class="grid"><div class="card"><h2>By start hour</h2><canvas id="byHour"></canvas></div><div class="card"><h2>By day of week</h2><canvas id="byDay"></canvas></div></div>
+<div class="card"><h2>Trend over time (weekly average)</h2><canvas id="trend"></canvas></div>
+</main>
+<script>
+const $=id=>document.getElementById(id), DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+$('tz').textContent=Intl.DateTimeFormat().resolvedOptions().timeZone;
+let DATA={shows:[]},charts={};
+const fmtMetric=(v,m)=>v==null?'-':(['sales','sph'].includes(m)?'$'+v.toFixed(0):v.toFixed(1));
+const hr=h=>(h%12||12)+(h<12?'a':'p');
+function val(s,m){if(m==='sph')return s.sales!=null&&s.minutes?s.sales/(s.minutes/60):null;return s[m]}
+function filtered(){
+  const days=+$('win').value,cut=days?Date.now()-days*864e5:0;
+  return DATA.shows.filter(s=>s.calculation_status==='GENERATED'&&s.start&&new Date(s.start)>=cut);
+}
+function agg(shows,keyFn,m){
+  const g={};
+  for(const s of shows){const v=val(s,m);if(v==null)continue;const k=keyFn(new Date(s.start));(g[k]??={sum:0,n:0});g[k].sum+=v;g[k].n++}
+  return g;
+}
+function draw(id,type,data,opts={}){charts[id]?.destroy();
+  charts[id]=new Chart($(id),{type,data,options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}},...opts}})}
+function render(){
+  const m=$('metric').value,min=+$('min').value,shows=filtered();
+  $('count').textContent=`${shows.length} shows with final analytics`+(DATA.demo?' (DEMO data)':'');
+  const slot=agg(shows,d=>d.getDay()+'-'+d.getHours(),m);
+  const cells=Object.entries(slot).filter(([,x])=>x.n>=min).map(([k,x])=>{const[d,h]=k.split('-').map(Number);return{d,h,avg:x.sum/x.n,n:x.n}});
+  const top=[...cells].sort((a,b)=>b.avg-a.avg).slice(0,4),max=Math.max(...cells.map(c=>c.avg),1);
+  $('best').innerHTML=top.length?top.map((c,i)=>`<div class="pill"><span>#${i+1}</span><b>${DAYS[c.d]} ${hr(c.h)}</b><span>${fmtMetric(c.avg,m)} avg · ${c.n} shows</span></div>`).join(''):'<span class="msg">Not enough data yet. Sync, or lower the minimum shows per slot.</span>';
+  let h='<div></div>'+[...Array(24)].map((_,i)=>`<div>${hr(i)}</div>`).join('');
+  for(let d=0;d<7;d++){h+=`<div style="text-align:right;padding-right:4px">${DAYS[d]}</div>`;
+    for(let x=0;x<24;x++){const c=cells.find(c=>c.d===d&&c.h===x);
+      h+=c?`<div class="c" title="${DAYS[d]} ${hr(x)}: ${fmtMetric(c.avg,m)} avg over ${c.n} shows" style="background:rgba(91,91,214,${(.12+.88*c.avg/max).toFixed(2)});color:${c.avg/max>.55?'#fff':'#111'}">${c.n}</div>`:'<div></div>'}}
+  $('heat').innerHTML=h;
+  const hrs=agg(shows,d=>d.getHours(),m),days=agg(shows,d=>d.getDay(),m);
+  const bar=(id,labels,src)=>draw(id,'bar',{labels,datasets:[{data:labels.map((_,i)=>src[i]&&src[i].n>=min?+(src[i].sum/src[i].n).toFixed(2):null),backgroundColor:'#5b5bd6'}]});
+  bar('byHour',[...Array(24)].map((_,i)=>hr(i)),hrs);bar('byDay',DAYS,days);
+  const wk=agg(shows,d=>{const x=new Date(d);x.setHours(0,0,0,0);x.setDate(x.getDate()-x.getDay());return x.toISOString().slice(0,10)},m);
+  const keys=Object.keys(wk).sort();
+  draw('trend','line',{labels:keys,datasets:[{data:keys.map(k=>+(wk[k].sum/wk[k].n).toFixed(2)),borderColor:'#5b5bd6',tension:.25,pointRadius:3}]});
+}
+async function load(){DATA=await (await fetch('/api/data')).json();
+  if(DATA.demo)$('token').placeholder='Demo mode: no token needed';
+  $('status').textContent=DATA.updatedAt?'Last synced '+new Date(DATA.updatedAt).toLocaleString():'No saved data yet. Click Sync.';render()}
+$('sync').onclick=async()=>{const b=$('sync'),st=$('status');b.disabled=true;st.className='msg';st.textContent='Syncing... (can take a minute for many shows)';
+  try{const r=await fetch('/api/sync',{method:'POST',body:JSON.stringify({token:$('token').value})}),j=await r.json();
+    if(!r.ok)throw new Error(j.error);$('token').value='';st.textContent=`Saved ${j.saved} shows.`;await load()}
+  catch(e){st.className='msg err';st.textContent=e.message}b.disabled=false};
+['metric','min','win'].forEach(i=>$(i).onchange=render);load();
+</script></body></html>

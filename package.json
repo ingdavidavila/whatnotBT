@@ -1,0 +1,1 @@
+{ "name": "whatnot-best-times", "version": "1.0.0", "type": "module", "scripts": { "start": "node server.js", "demo": "node server.js --demo" } }
